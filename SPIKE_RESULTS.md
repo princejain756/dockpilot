@@ -37,11 +37,20 @@ Each trial ran: `resolve_po(PO-4471)` -> `Rev 1 (282 pcs)` -> `barge_in` -> `Rev
 - **End-to-end 9-step race latency:** mean `9.23 ms`, p50 `8.91 ms`, p95 `11.32 ms`, max `11.32 ms`
 - **Failures:** `None`
 
-## 3. Vertex AI `asia-south1` & Cloud Run Deployment Readiness
+## 3. Production Cloud Run `asia-south1`, Firestore Native & Vertex AI Verification
 
-- **Google Cloud Billing Account verified:** `01A36C-9FA923-2D6430` (`My Billing Account`, active Paid account).
-- **Local `gcloud` CLI status:** Not installed locally (`which gcloud` missing); Vertex AI `asia-south1` endpoint deployment (`deploy_cloud_run.sh`) awaits one interactive OAuth approval by Prince:
-  ```bash
-  brew install --cask google-cloud-sdk && gcloud auth login
-  ```
-- **Note on Vertex vs Developer API:** Live probe above verified Gemini Live WebSocket execution directly via `GEMINI_API_KEY`; once `gcloud auth login` runs against billing account `01A36C-9FA923-2D6430`, the exact same container deploys to Cloud Run `asia-south1` with Firestore `(default)` and Vertex AI `gemini-3.8-live`.
+Deployed live to Google Cloud Mumbai (`asia-south1`, project `gen-lang-client-0804407993`, billing `01A36C-9FA923-2D6430`):
+
+- **Live Web UI (`dockpilot-web`):** `https://dockpilot-web-493779545452.asia-south1.run.app` (`/` and `/dock` both verified HTTP `200`)
+- **Live FastAPI + ADK Gateway (`dockpilot-api`):** `https://dockpilot-api-493779545452.asia-south1.run.app`
+- **`GET /api/health`:** `{'status': 'ok', 'model': 'gemini-3.8-live', 'region': 'asia-south1', 'storage_backend': 'firestore', 'live_configured': True}`
+- **Live Cloud Firestore Native (`asia-south1`, `(default)`) transactional torture cycle (`POST` E2E):**
+  - `resolve-po PO-4471` -> `draft Rev 1 (282 pcs)` -> `barge-in` -> `draft Rev 2 (284 pcs)`
+  - `test-stale-commit` blocked (`blocked=True`, `STALE_REVISION`) and persisted `BLOCKED_STALE_REVISION` inside Firestore transaction
+  - Receiver self-approval blocked (`HTTP 403 FORBIDDEN_ROLE`)
+  - Supervisor approval (`sup-meera`) + `commit` updated Firestore `inventory/DOCK1_SKU-24` (`1000 -> 1284`) and wrote `CLM-GRN-4471-LOUD` (`INR 33040.0 DRAFT`)
+  - `test-duplicate-commit` returned `idempotent_replay=True` with stock held cleanly at `1284`
+  - Compensating reversal restored Firestore stock (`1284 -> 1000`)
+- **Live Cloud Run WebSocket -> Vertex AI `gemini-3.8-live` (`wss://dockpilot-api-493779545452.asia-south1.run.app/ws/dock/WF-LIVE-WS`):**
+  - Server `hello`: `{'type': 'hello', 'live_backend': 'vertex_ai', 'model': 'gemini-3.8-live', 'region': 'asia-south1'}`
+  - Live `text_turn` executed `resolve_po_and_challan({'po_number': 'PO-4471'})` in `62.5 ms` against Firestore, streamed `~305,763` bytes of 24kHz Hinglish audio (`49` WS events, zero fallbacks), transcript: `"VayuMech PO-4471 resolve ho gaya hai. Expected pieces 288 hain. Kitne cartons aur loose pieces miley hain?"`

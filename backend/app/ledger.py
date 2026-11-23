@@ -920,9 +920,12 @@ class FirestoreAtomicLedger(BaseLedgerStore, _WorkflowMutatorMixin):
     def _run_fs_tx(self, workflow_id: str, fn):
         wf_ref = self.client.collection("workflows").document(workflow_id)
         tx = self.client.transaction()
+        raised_err: DomainRuleError | None = None
 
         @self._firestore.transactional
         def _execute(transaction):
+            nonlocal raised_err
+            raised_err = None
             doc = wf_ref.get(transaction=transaction)
             if doc.exists:
                 snap = WorkflowSnapshot.model_validate(doc.to_dict())
@@ -934,12 +937,16 @@ class FirestoreAtomicLedger(BaseLedgerStore, _WorkflowMutatorMixin):
                 res = fn(transaction, snap)
                 transaction.set(wf_ref, json.loads(snap.model_dump_json()))
                 return res
-            except DomainRuleError:
+            except DomainRuleError as err:
+                raised_err = err
                 transaction.set(wf_ref, json.loads(snap.model_dump_json()))
-                raise
+                return None
 
         with self._lock:
-            return _execute(tx)
+            out = _execute(tx)
+            if raised_err is not None:
+                raise raised_err
+            return out
 
     def get_snapshot(self, workflow_id: str) -> WorkflowSnapshot:
         return self._run_fs_tx(workflow_id, lambda _tx, snap: snap)

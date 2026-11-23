@@ -13,7 +13,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --platform managed \
   --allow-unauthenticated \
   --timeout 3600 \
-  --min-instances 1 \
+  --min-instances "${MIN_INSTANCES:-0}" \
   --max-instances 3 \
   --concurrency 4 \
   --memory 1Gi \
