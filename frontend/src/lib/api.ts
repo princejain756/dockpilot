@@ -5,7 +5,11 @@ export function getApiBase(): string {
     return process.env.NEXT_PUBLIC_API_BASE.replace(/\/$/, "");
   }
   if (typeof window !== "undefined") {
-    return `${window.location.protocol}//${window.location.hostname}:8000`;
+    const { hostname, protocol } = window.location;
+    if (hostname.includes("dockpilot-web-") && hostname.endsWith(".run.app")) {
+      return `https://${hostname.replace("dockpilot-web-", "dockpilot-api-")}`;
+    }
+    return `${protocol}//${hostname}:8000`;
   }
   return "http://127.0.0.1:8000";
 }
@@ -15,8 +19,12 @@ export function getWsBase(): string {
     return process.env.NEXT_PUBLIC_WS_BASE.replace(/\/$/, "");
   }
   if (typeof window !== "undefined") {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${window.location.hostname}:8000`;
+    const { hostname, protocol } = window.location;
+    if (hostname.includes("dockpilot-web-") && hostname.endsWith(".run.app")) {
+      return `wss://${hostname.replace("dockpilot-web-", "dockpilot-api-")}`;
+    }
+    const proto = protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${hostname}:8000`;
   }
   return "ws://127.0.0.1:8000";
 }
