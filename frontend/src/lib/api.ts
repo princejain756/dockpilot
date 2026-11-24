@@ -6,6 +6,9 @@ export function getApiBase(): string {
   }
   if (typeof window !== "undefined") {
     const { hostname, protocol } = window.location;
+    if (hostname === "dockpilot.adelev8.com") {
+      return "https://api.dockpilot.adelev8.com";
+    }
     if (hostname.includes("dockpilot-web-") && hostname.endsWith(".run.app")) {
       return `https://${hostname.replace("dockpilot-web-", "dockpilot-api-")}`;
     }
@@ -20,6 +23,9 @@ export function getWsBase(): string {
   }
   if (typeof window !== "undefined") {
     const { hostname, protocol } = window.location;
+    if (hostname === "dockpilot.adelev8.com") {
+      return "wss://api.dockpilot.adelev8.com";
+    }
     if (hostname.includes("dockpilot-web-") && hostname.endsWith(".run.app")) {
       return `wss://${hostname.replace("dockpilot-web-", "dockpilot-api-")}`;
     }
