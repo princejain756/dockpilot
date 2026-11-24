@@ -9,7 +9,7 @@ Built by Prince Jain (Full-Stack Software Engineer, Team ADELEV8 AI).
 - **Live Web Console:** `https://dockpilot.adelev8.com` (routed over TLS to Cloud Run `asia-south1`, fallback upstream `https://dockpilot-web-493779545452.asia-south1.run.app`)
 - **Backend Health Endpoint:** `https://api.dockpilot.adelev8.com/api/health`
 - **45s Architecture and Cost Breakdown (YouTube Short):** `https://youtube.com/shorts/Oyn0a0fRUcg`
-- **LinkedIn Build Post (`#BuildwithGemini`):** `https://www.linkedin.com/feed/update/urn:li:activity:7530940062700802048/`
+- **LinkedIn Build Post (`#BuildwithGemini`):** `https://www.linkedin.com/feed/update/urn:li:activity:7530950271741534209/`
 
 ## Core Architecture
 
