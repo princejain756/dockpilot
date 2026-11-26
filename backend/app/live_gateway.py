@@ -21,6 +21,67 @@ from app.telemetry import FinOpsMeter
 from app.tools_adk import DockPilotToolkit, build_tool_declarations
 
 
+def _norm_modality(mod: Any) -> str:
+    if mod is None:
+        return "TEXT"
+    raw = str(getattr(mod, "value", mod)).upper()
+    for name in ("AUDIO", "IMAGE", "VIDEO", "TEXT", "DOCUMENT"):
+        if name in raw:
+            return name
+    return "TEXT"
+
+
+def extract_usage_tokens(um: Any) -> dict[str, int]:
+    """Split Gemini Live UsageMetadata by input/output modality for accurate FinOps billing."""
+    text_in = 0
+    image_in = 0
+    audio_in = 0
+    text_out = 0
+    audio_out = 0
+
+    prompt_details = list(getattr(um, "prompt_tokens_details", None) or [])
+    tool_details = list(getattr(um, "tool_use_prompt_tokens_details", None) or [])
+    if prompt_details or tool_details:
+        for item in (*prompt_details, *tool_details):
+            mod = _norm_modality(item.get("modality") if isinstance(item, dict) else getattr(item, "modality", None))
+            cnt = int((item.get("token_count") if isinstance(item, dict) else getattr(item, "token_count", 0)) or 0)
+            if mod == "AUDIO":
+                audio_in += cnt
+            elif mod in ("IMAGE", "VIDEO"):
+                image_in += cnt
+            else:
+                text_in += cnt
+        if not tool_details:
+            text_in += int(getattr(um, "tool_use_prompt_token_count", 0) or 0)
+    else:
+        text_in += int(getattr(um, "prompt_token_count", 0) or 0)
+        text_in += int(getattr(um, "tool_use_prompt_token_count", 0) or 0)
+
+    resp_details = list(getattr(um, "response_tokens_details", None) or [])
+    if resp_details:
+        for item in resp_details:
+            mod = _norm_modality(item.get("modality") if isinstance(item, dict) else getattr(item, "modality", None))
+            cnt = int((item.get("token_count") if isinstance(item, dict) else getattr(item, "token_count", 0)) or 0)
+            if mod == "AUDIO":
+                audio_out += cnt
+            else:
+                text_out += cnt
+    else:
+        text_out += int(
+            getattr(um, "response_token_count", None)
+            or getattr(um, "candidates_token_count", 0)
+            or 0
+        )
+
+    return {
+        "text_in": max(0, text_in),
+        "image_in": max(0, image_in),
+        "audio_in": max(0, audio_in),
+        "text_out": max(0, text_out),
+        "audio_out": max(0, audio_out),
+    }
+
+
 class WorkflowBroadcastHub:
     """Broadcasts authoritative state and telemetry to all connected UI/phone tabs."""
 
@@ -80,12 +141,12 @@ class LiveGatewaySession:
         self._speech_end_ts: float | None = None
         self._session_started_ts = time.monotonic()
 
-    def _build_client(self) -> tuple[genai.Client, str] | None:
+    def _build_client_for_location(self, location: str) -> tuple[genai.Client, str] | None:
         if self.settings.gcp_project_id:
             client = genai.Client(
                 vertexai=True,
                 project=self.settings.gcp_project_id,
-                location=self.settings.gcp_location,
+                location=location,
             )
             return client, self.settings.gemini_live_model
         if self.settings.gemini_api_key:
@@ -93,13 +154,33 @@ class LiveGatewaySession:
             return client, self.settings.gemini_live_model
         return None
 
+    def _build_client(self) -> tuple[genai.Client, str] | None:
+        return self._build_client_for_location(self.settings.gcp_location)
+
     def _live_config(self, stage: WorkflowStage) -> types.LiveConnectConfig:
         card = get_prompt_card(stage)
         self.meter.active_prompt_tokens = int(card["approx_tokens"])
+        speech_kwargs: dict[str, Any] = {}
+        if self.settings.gemini_live_voice:
+            speech_kwargs["voice_config"] = types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self.settings.gemini_live_voice)
+            )
+        if self.settings.gemini_live_language_code:
+            speech_kwargs["language_code"] = self.settings.gemini_live_language_code
         return types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
             system_instruction=types.Content(parts=[types.Part(text=str(card["text"]))]),
             tools=[types.Tool(function_declarations=build_tool_declarations())],
+            speech_config=types.SpeechConfig(**speech_kwargs) if speech_kwargs else None,
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=False,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                    prefix_padding_ms=150,
+                    silence_duration_ms=500,
+                )
+            ),
             context_window_compression=types.ContextWindowCompressionConfig(
                 sliding_window=types.SlidingWindow()
             ),
@@ -230,94 +311,137 @@ class LiveGatewaySession:
             msg = json.loads(raw)
             await self._handle_control_message(msg, live_session=None)
 
-    async def _run_live_loop(self, ws: WebSocket, client: genai.Client, model_name: str) -> None:
+    async def _stream_live_session(
+        self,
+        ws: WebSocket,
+        client: genai.Client,
+        model_name: str,
+        state: dict[str, bool],
+    ) -> None:
         snap = self.ledger.get_snapshot(self.workflow_id)
-        try:
-            async with client.aio.live.connect(model=model_name, config=self._live_config(snap.stage)) as live_session:
-                async def _upstream() -> None:
-                    while True:
-                        raw = await ws.receive_text()
-                        msg = json.loads(raw)
-                        await self._handle_control_message(msg, live_session=live_session)
+        async with client.aio.live.connect(model=model_name, config=self._live_config(snap.stage)) as live_session:
+            async def _upstream() -> None:
+                while True:
+                    raw = await ws.receive_text()
+                    msg = json.loads(raw)
+                    await self._handle_control_message(msg, live_session=live_session)
 
-                async def _downstream() -> None:
-                    while True:
-                        async for server_msg in live_session.receive():
-                            self.meter.duration_seconds = time.monotonic() - self._session_started_ts
-                            if getattr(server_msg, "session_resumption_update", None):
-                                upd = server_msg.session_resumption_update
-                                if getattr(upd, "new_handle", None):
-                                    self._resumption_handle = upd.new_handle
-                            if getattr(server_msg, "go_away", None):
+            async def _downstream() -> None:
+                while True:
+                    async for server_msg in live_session.receive():
+                        state["received_any_frame"] = True
+                        self.meter.duration_seconds = time.monotonic() - self._session_started_ts
+                        if getattr(server_msg, "session_resumption_update", None):
+                            upd = server_msg.session_resumption_update
+                            if getattr(upd, "new_handle", None):
+                                self._resumption_handle = upd.new_handle
+                        if getattr(server_msg, "go_away", None):
+                            await self.hub.broadcast(
+                                self.workflow_id,
+                                {"type": "go_away", "message": "Live socket approaching lifetime; ready for clean resume."},
+                            )
+                        if getattr(server_msg, "usage_metadata", None):
+                            toks = extract_usage_tokens(server_msg.usage_metadata)
+                            self.meter.record_usage(
+                                **toks,
+                                is_new_turn=bool(toks["audio_out"] or toks["text_out"]),
+                            )
+                            await self.hub.broadcast(
+                                self.workflow_id,
+                                {"type": "telemetry", "telemetry": self.meter.snapshot()},
+                            )
+                        sc = getattr(server_msg, "server_content", None)
+                        if sc:
+                            if getattr(sc, "interrupted", False):
+                                await self.hub.broadcast(self.workflow_id, {"type": "server_interrupted"})
+                            out_tr = getattr(sc, "output_transcription", None)
+                            if out_tr and getattr(out_tr, "text", None):
+                                if self._speech_end_ts is not None:
+                                    self.meter.record_ttfa((time.monotonic() - self._speech_end_ts) * 1000.0)
+                                    self._speech_end_ts = None
                                 await self.hub.broadcast(
                                     self.workflow_id,
-                                    {"type": "go_away", "message": "Live socket approaching lifetime; ready for seamless resume."},
+                                    {"type": "agent_transcript", "text": out_tr.text},
                                 )
-                            if getattr(server_msg, "usage_metadata", None):
-                                um = server_msg.usage_metadata
-                                self.meter.record_usage(
-                                    text_in=getattr(um, "prompt_token_count", 0) or 0,
-                                    text_out=getattr(um, "candidates_token_count", 0) or 0,
-                                    is_new_turn=False,
+                            mt = getattr(sc, "model_turn", None)
+                            if mt and getattr(mt, "parts", None):
+                                if self._speech_end_ts is not None:
+                                    self.meter.record_ttfa((time.monotonic() - self._speech_end_ts) * 1000.0)
+                                    self._speech_end_ts = None
+                                for part in mt.parts:
+                                    if getattr(part, "inline_data", None) and part.inline_data.data:
+                                        b64 = base64.b64encode(part.inline_data.data).decode("ascii")
+                                        await self.hub.broadcast(
+                                            self.workflow_id,
+                                            {"type": "audio_out_pcm24", "data_b64": b64},
+                                        )
+                                    if getattr(part, "text", None):
+                                        await self.hub.broadcast(
+                                            self.workflow_id,
+                                            {"type": "agent_transcript", "text": part.text},
+                                        )
+                        tc = getattr(server_msg, "tool_call", None)
+                        if tc and getattr(tc, "function_calls", None):
+                            responses: list[types.FunctionResponse] = []
+                            for fc in tc.function_calls:
+                                t0 = time.monotonic()
+                                result = self._dispatch_tool(fc.name, dict(fc.args or {}))
+                                latency_ms = round((time.monotonic() - t0) * 1000.0, 1)
+                                responses.append(
+                                    types.FunctionResponse(id=fc.id, name=fc.name, response=result)
                                 )
-                            sc = getattr(server_msg, "server_content", None)
-                            if sc:
-                                if getattr(sc, "interrupted", False):
-                                    await self.hub.broadcast(self.workflow_id, {"type": "server_interrupted"})
-                                out_tr = getattr(sc, "output_transcription", None)
-                                if out_tr and getattr(out_tr, "text", None):
-                                    if self._speech_end_ts is not None:
-                                        self.meter.record_ttfa((time.monotonic() - self._speech_end_ts) * 1000.0)
-                                        self._speech_end_ts = None
-                                    await self.hub.broadcast(
-                                        self.workflow_id,
-                                        {"type": "agent_transcript", "text": out_tr.text},
-                                    )
-                                mt = getattr(sc, "model_turn", None)
-                                if mt and getattr(mt, "parts", None):
-                                    if self._speech_end_ts is not None:
-                                        self.meter.record_ttfa((time.monotonic() - self._speech_end_ts) * 1000.0)
-                                        self._speech_end_ts = None
-                                    for part in mt.parts:
-                                        if getattr(part, "inline_data", None) and part.inline_data.data:
-                                            b64 = base64.b64encode(part.inline_data.data).decode("ascii")
-                                            await self.hub.broadcast(
-                                                self.workflow_id,
-                                                {"type": "audio_out_pcm24", "data_b64": b64},
-                                            )
-                                        if getattr(part, "text", None):
-                                            await self.hub.broadcast(
-                                                self.workflow_id,
-                                                {"type": "agent_transcript", "text": part.text},
-                                            )
-                            tc = getattr(server_msg, "tool_call", None)
-                            if tc and getattr(tc, "function_calls", None):
-                                responses: list[types.FunctionResponse] = []
-                                for fc in tc.function_calls:
-                                    t0 = time.monotonic()
-                                    result = self._dispatch_tool(fc.name, dict(fc.args or {}))
-                                    latency_ms = round((time.monotonic() - t0) * 1000.0, 1)
-                                    responses.append(
-                                        types.FunctionResponse(id=fc.id, name=fc.name, response=result)
-                                    )
-                                    cur_snap = self.ledger.get_snapshot(self.workflow_id)
-                                    await self.hub.broadcast(
-                                        self.workflow_id,
-                                        {
-                                            "type": "tool_executed",
-                                            "tool": fc.name,
-                                            "args": dict(fc.args or {}),
-                                            "result": result,
-                                            "latency_ms": latency_ms,
-                                            "snapshot": cur_snap.model_dump(),
-                                            "telemetry": self.meter.snapshot(),
-                                        },
-                                    )
-                                    await self._maybe_swap_prompt_card(live_session, cur_snap)
-                                await live_session.send_tool_response(function_responses=responses)
+                                cur_snap = self.ledger.get_snapshot(self.workflow_id)
+                                await self.hub.broadcast(
+                                    self.workflow_id,
+                                    {
+                                        "type": "tool_executed",
+                                        "tool": fc.name,
+                                        "args": dict(fc.args or {}),
+                                        "result": result,
+                                        "latency_ms": latency_ms,
+                                        "snapshot": cur_snap.model_dump(),
+                                        "telemetry": self.meter.snapshot(),
+                                    },
+                                )
+                                await self._maybe_swap_prompt_card(live_session, cur_snap)
+                            await live_session.send_tool_response(function_responses=responses)
 
-                await asyncio.gather(_upstream(), _downstream())
+            await asyncio.gather(_upstream(), _downstream())
+
+    async def _run_live_loop(self, ws: WebSocket, client: genai.Client, model_name: str) -> None:
+        from fastapi import WebSocketDisconnect
+
+        state = {"received_any_frame": False}
+        try:
+            await self._stream_live_session(ws, client, model_name, state)
+        except WebSocketDisconnect:
+            raise
         except Exception as err:
+            fallback_loc = self.settings.vertex_fallback_location.strip()
+            if (
+                self.settings.gcp_project_id
+                and not state["received_any_frame"]
+                and fallback_loc
+                and fallback_loc != self.settings.gcp_location
+            ):
+                fallback_tuple = self._build_client_for_location(fallback_loc)
+                if fallback_tuple is not None:
+                    await self.hub.broadcast(
+                        self.workflow_id,
+                        {
+                            "type": "region_failover",
+                            "from_region": self.settings.gcp_location,
+                            "region": fallback_loc,
+                            "reason": str(err)[:160],
+                        },
+                    )
+                    try:
+                        await self._stream_live_session(ws, fallback_tuple[0], fallback_tuple[1], state)
+                        return
+                    except WebSocketDisconnect:
+                        raise
+                    except Exception as fb_err:
+                        err = fb_err
             await self.hub.broadcast(
                 self.workflow_id,
                 {"type": "live_fallback", "reason": str(err)[:200]},

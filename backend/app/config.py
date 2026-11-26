@@ -22,12 +22,20 @@ class Settings:
 
     gcp_project_id: str = field(default_factory=lambda: _env_str("GCP_PROJECT_ID", ""))
     gcp_location: str = field(default_factory=lambda: _env_str("GCP_LOCATION", "asia-south1"))
+    vertex_fallback_location: str = field(
+        default_factory=lambda: _env_str("VERTEX_FALLBACK_LOCATION", "us-central1")
+    )
     gemini_live_model: str = field(default_factory=lambda: _env_str("GEMINI_LIVE_MODEL", "gemini-3.8-live"))
+    gemini_live_voice: str = field(default_factory=lambda: _env_str("GEMINI_LIVE_VOICE", "Despina"))
+    gemini_live_language_code: str = field(
+        default_factory=lambda: _env_str("GEMINI_LIVE_LANGUAGE_CODE", "hi-IN")
+    )
     gemini_api_key: str = field(default_factory=lambda: _env_str("GEMINI_API_KEY", ""))
     storage_backend: str = field(default_factory=lambda: _env_str("STORAGE_BACKEND", "sqlite"))
     sqlite_path: str = field(default_factory=lambda: _env_str("DOCKPILOT_SQLITE_PATH", str(DEFAULT_SQLITE_PATH)))
     firestore_database: str = field(default_factory=lambda: _env_str("FIRESTORE_DATABASE", "(default)"))
     vertex_rag_corpus: str = field(default_factory=lambda: _env_str("VERTEX_RAG_CORPUS", ""))
+    vertex_rag_location: str = field(default_factory=lambda: _env_str("VERTEX_RAG_LOCATION", ""))
     hitl_shortage_threshold_inr: int = field(
         default_factory=lambda: int(os.getenv("HITL_SHORTAGE_THRESHOLD_INR", "25000"))
     )

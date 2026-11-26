@@ -20,37 +20,48 @@ class _SOPChunk:
     body: str
 
 
-def _parse_sop_file(path: Path) -> _SOPChunk:
-    text = path.read_text(encoding="utf-8")
-    title = path.stem.replace("_", " ").title()
-    doc_id = path.stem.upper()
-    clause = "Clause 1"
-    revision = "v1"
-    effective_date = "2026-10-01"
+def _parse_sop_fields(text: str) -> dict[str, str]:
+    title = ""
+    doc_id = ""
+    clause = ""
+    revision = ""
+    effective_date = ""
     body_lines: list[str] = []
 
     for line in text.splitlines():
         s = line.strip()
-        if s.startswith("# "):
+        if s.startswith("# ") and not title:
             title = s[2:].strip()
-        elif s.startswith("Document ID:"):
+        elif s.startswith("Document ID:") and not doc_id:
             doc_id = s.split(":", 1)[1].strip()
-        elif s.startswith("Revision:"):
+        elif s.startswith("Revision:") and not revision:
             revision = s.split(":", 1)[1].strip()
-        elif s.startswith("Effective Date:"):
+        elif s.startswith("Effective Date:") and not effective_date:
             effective_date = s.split(":", 1)[1].strip()
-        elif s.startswith("## "):
+        elif s.startswith("## ") and not clause:
             clause = s[3:].strip()
         elif s:
             body_lines.append(s)
 
+    return {
+        "title": title,
+        "doc_id": doc_id,
+        "clause": clause,
+        "revision": revision,
+        "effective_date": effective_date,
+        "body": " ".join(body_lines),
+    }
+
+
+def _parse_sop_file(path: Path) -> _SOPChunk:
+    fields = _parse_sop_fields(path.read_text(encoding="utf-8"))
     return _SOPChunk(
-        doc_id=doc_id,
-        title=title,
-        clause=clause,
-        revision=revision,
-        effective_date=effective_date,
-        body=" ".join(body_lines),
+        doc_id=fields["doc_id"] or path.stem.upper(),
+        title=fields["title"] or path.stem.replace("_", " ").title(),
+        clause=fields["clause"] or "Clause 1",
+        revision=fields["revision"] or "v1",
+        effective_date=fields["effective_date"] or "2026-10-01",
+        body=fields["body"],
     )
 
 
@@ -68,7 +79,9 @@ class SOPRetriever:
     def __init__(self, settings: Settings, corpus_dir: Path = SOP_CORPUS_DIR):
         self.settings = settings
         self.corpus_dir = corpus_dir
-        self._chunks = [_parse_sop_file(p) for p in sorted(corpus_dir.glob("*.md"))]
+        paths = sorted(corpus_dir.glob("*.md"))
+        self._chunks = [_parse_sop_file(p) for p in paths]
+        self._by_stem = {p.stem: chunk for p, chunk in zip(paths, self._chunks)}
 
     def search(self, query: str, scope: str = "all", top_k: int = 2) -> list[PolicyCitation]:
         """Return cited, <=150-token policy passages."""
@@ -78,33 +91,76 @@ class SOPRetriever:
                 return vertex_hits
         return self._search_local(query=query, scope=scope, top_k=top_k)
 
-    def _try_vertex_rag(self, query: str, top_k: int) -> list[PolicyCitation]:
-        """Attempt Vertex AI RAG Engine retrieval; gracefully fall back if unavailable."""
-        try:
-            from vertexai import rag  # type: ignore
-            import vertexai  # type: ignore
+    def _resolve_rag_location(self) -> str:
+        if self.settings.vertex_rag_location.strip():
+            return self.settings.vertex_rag_location.strip()
+        m = re.search(r"/locations/([^/]+)/", self.settings.vertex_rag_corpus)
+        if m:
+            return m.group(1)
+        return self.settings.gcp_location
 
-            vertexai.init(project=self.settings.gcp_project_id, location=self.settings.gcp_location)
-            response = rag.retrieval_query(
-                rag_resources=[rag.RagResource(rag_corpus=self.settings.vertex_rag_corpus)],
-                text=query,
-                rag_retrieval_config=rag.RagRetrievalConfig(top_k=top_k),
+    def _resolve_rag_project(self) -> str:
+        m = re.search(r"/projects/([^/]+)/", self.settings.vertex_rag_corpus)
+        if m:
+            return m.group(1)
+        return self.settings.gcp_project_id
+
+    def _try_vertex_rag(self, query: str, top_k: int) -> list[PolicyCitation]:
+        """Query managed Vertex AI RAG Engine via REST retrieveContexts; fall back on error."""
+        try:
+            import google.auth  # type: ignore
+            from google.auth.transport.requests import Request  # type: ignore
+            import httpx
+
+            creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+            if not creds.valid:
+                creds.refresh(Request())
+            if not creds.token:
+                return []
+
+            rag_loc = self._resolve_rag_location()
+            project = self._resolve_rag_project()
+            if not rag_loc or not project:
+                return []
+
+            url = (
+                f"https://{rag_loc}-aiplatform.googleapis.com/v1beta1/"
+                f"projects/{project}/locations/{rag_loc}:retrieveContexts"
             )
-            contexts = getattr(getattr(response, "contexts", None), "contexts", []) or []
+            body = {
+                "vertexRagStore": {
+                    "ragResources": [{"ragCorpus": self.settings.vertex_rag_corpus}],
+                },
+                "query": {"text": query, "ragRetrievalConfig": {"topK": top_k}},
+            }
+            resp = httpx.post(
+                url,
+                headers={"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"},
+                json=body,
+                timeout=2.5,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            contexts = (payload.get("contexts") or {}).get("contexts") or []
+
             citations: list[PolicyCitation] = []
             for idx, ctx in enumerate(contexts[:top_k], start=1):
-                raw_text = (getattr(ctx, "text", "") or "").strip()
+                chunk_obj = ctx.get("chunk") or {}
+                raw_text = (ctx.get("text") or chunk_obj.get("text") or "").strip()
                 if not raw_text:
                     continue
-                src = getattr(ctx, "source_uri", "") or f"VERTEX-SOP-{idx}"
+                src_name = ctx.get("sourceDisplayName") or ctx.get("sourceUri") or ""
+                stem = Path(src_name).stem if src_name else ""
+                base = self._by_stem.get(stem)
+                parsed = _parse_sop_fields(raw_text)
                 citations.append(
                     PolicyCitation(
-                        doc_id=src.rsplit("/", 1)[-1],
-                        title="Vertex AI Enterprise SOP",
-                        clause=f"Retrieved Passage {idx}",
-                        revision="vertex-corpus",
-                        effective_date="2026-10-01",
-                        excerpt=_cap_words(raw_text, 105),
+                        doc_id=parsed["doc_id"] or (base.doc_id if base else (stem.upper() or f"VERTEX-SOP-{idx}")),
+                        title=parsed["title"] or (base.title if base else "Vertex AI Enterprise SOP"),
+                        clause=parsed["clause"] or (base.clause if base else f"Retrieved Passage {idx}"),
+                        revision=parsed["revision"] or (base.revision if base else "vertex-corpus"),
+                        effective_date=parsed["effective_date"] or (base.effective_date if base else "2026-10-01"),
+                        excerpt=_cap_words(parsed["body"] or raw_text, 105),
                         source_backend="vertex_rag",
                     )
                 )

@@ -54,3 +54,15 @@ Deployed live to Google Cloud Mumbai (`asia-south1`, project `gen-lang-client-08
 - **Live Cloud Run WebSocket -> Vertex AI `gemini-3.8-live` (`wss://dockpilot-api-493779545452.asia-south1.run.app/ws/dock/WF-LIVE-WS`):**
   - Server `hello`: `{'type': 'hello', 'live_backend': 'vertex_ai', 'model': 'gemini-3.8-live', 'region': 'asia-south1'}`
   - Live `text_turn` executed `resolve_po_and_challan({'po_number': 'PO-4471'})` in `62.5 ms` against Firestore, streamed `~305,763` bytes of 24kHz Hinglish audio (`49` WS events, zero fallbacks), transcript: `"VayuMech PO-4471 resolve ho gaya hai. Expected pieces 288 hain. Kitne cartons aur loose pieces miley hain?"`
+
+## 4. Nov 26 Cloud Run Mumbai + Managed Vertex AI RAG + Modality Telemetry Verification
+
+Measured after upgrading `dockpilot-api` (`dockpilot-api-00002-5m2`, `asia-south1`, behind TLS domain `https://api.dockpilot.adelev8.com`):
+
+- **`GET https://api.dockpilot.adelev8.com/api/health`:** `{'status': 'ok', 'model': 'gemini-3.8-live', 'region': 'asia-south1', 'fallback_region': 'us-central1', 'voice': 'Despina', 'language_code': 'hi-IN', 'semantic_vad': True, 'storage_backend': 'firestore', 'rag_backend': 'vertex_rag', 'live_configured': True}`
+- **Managed Vertex AI RAG Engine (`projects/493779545452/locations/asia-south1/ragCorpora/2305843009213693952`):** All 6 clean-room SOP documents indexed via `ragFiles:upload`. Live `GET /api/sop/search?q=shortage+approval+25000` returned `2` citations in `1,110.8 ms` (`SOP-RCV-002` `Clause 4` and `SOP-FIN-001` `Clause 5`) with `source_backend: 'vertex_rag'`.
+- **Live WebSocket (`wss://api.dockpilot.adelev8.com/ws/dock/WF-LIVE-VERIFY`) with `Despina` (`hi-IN`) + Semantic VAD + Modality Metering:**
+  - `hello`: `{'type': 'hello', 'live_backend': 'vertex_ai', 'model': 'gemini-3.8-live', 'region': 'asia-south1'}`
+  - `resolve_po_and_challan` executed in `65.8 ms` against Cloud Firestore Native; returned `368,162` bytes of 24kHz `Despina` Hinglish audio (`TTFA 907.1 ms`, zero fallbacks); transcript: `"PO-4471 ke liye 288 pieces, yaani 12 peti expected hain. Aapki kitni peti aur loose pieces received hain?"`
+  - Live `usage_metadata` modality split (`extract_usage_tokens`): `2` turns, `active_prompt_tokens: 180` vs `naive_prompt_tokens: 20000`, `text_in: 975`, `text_out: 58`, `audio_out: 196`, `duration_seconds: 8.8`, `metered_inr: 0.2826` (`1.93 INR/min`) vs `shadow_naive_inr: 2.8699` (`19.63 INR/min`).
+- **Automated Test Suite (`backend/`):** `37/37` `pytest` tests passed after final edits (`test_invariants.py`, `test_api_ws.py`, and `test_live_gateway.py`).

@@ -13,18 +13,20 @@ Built by Prince Jain (Full-Stack Software Engineer, Team ADELEV8 AI).
 
 ## Core Architecture
 
-- **Realtime Voice Gateway (`backend/app/live_gateway.py`):** Streams bidirectional PCM16 audio and 1 FPS camera frames to Vertex AI `gemini-3.8-live` in `asia-south1`. Wraps `session.receive()` in an explicit multi-turn receive loop and pushes concise sub-200-token FSM stage context cards via `send_context_update` instead of resending static mega-prompts every turn.
+- **Realtime Voice Gateway (`backend/app/live_gateway.py`):** Streams bidirectional PCM16 audio and 1 FPS camera frames to Vertex AI `gemini-3.8-live` in `asia-south1` (with automatic `us-central1` region failover on initial connect failure). Configures `SpeechConfig` (`Despina`, `hi-IN`), explicit Semantic VAD (`StartSensitivity.START_SENSITIVITY_HIGH`, `EndSensitivity.END_SENSITIVITY_LOW`, `150 ms` prefix padding, `500 ms` silence duration), `context_window_compression`, `session_resumption`, and per-turn modality token tracking (`prompt_tokens_details` and `response_tokens_details`) while pushing sub-200-token FSM stage context cards via `send_context_update`.
+- **Vertex AI RAG Engine Tool (`backend/app/rag.py`):** Queries managed Vertex AI RAG Engine corpus (`projects/493779545452/locations/asia-south1/ragCorpora/2305843009213693952` indexing all 6 clean-room receiving SOP files) via `retrieveContexts` with local keyword-synonym fallback, returning cited passages under 150 tokens (`SOP-RCV-002`, `SOP-FIN-001`, `SOP-EWB-003`).
 - **Deterministic Write-Gate (`backend/app/ledger.py`, `backend/app/main.py`):** Gemini proposes structured counts (`propose_count`), while Python validates schema, policy thresholds (`₹25,000` variance supervisor escalation), and monotonically increasing `expected_revision` numbers. Blocked writes (`HTTP 409 STALE_REVISION` and `HTTP 403 FORBIDDEN_ROLE`) are persisted outside aborted transactions so audit history stays intact.
 - **Atomic Ledger Commit:** Supervisor sign-off commits SKU inventory updates atomically inside a single `@firestore.transactional` boundary and generates a serial `DRAFT` GST Debit Note pack alongside immutable Cloud Firestore audit events.
 - **Operator Command Center (`frontend/src/`):** Next.js 16 dashboard showing live Hinglish transcript stream, optimistic lock states, revision bumps, live meter telemetry (`₹/min`), and dynamic sibling Cloud Run or custom-domain API resolution (`frontend/src/lib/api.ts`).
 
 ## Verified Cloud Run Torture-Test Metrics
 
-- **Token and Cost Reduction:** Replacing a 20,000-token monolithic system prompt with sub-200-token FSM context cards cut live metered session cost by **77%**, from **₹9.12/min** down to **₹2.07/min** across 4 tool calls.
-- **Barge-In Concurrency Lock:** Mid-sentence count corrections trigger **HTTP 409 STALE_REVISION** blocks with **58 ms** Firestore tool round-trip timing.
+- **Token and Cost Reduction:** Replacing a 20,000-token monolithic system prompt with sub-200-token FSM context cards and modality-split billing achieved **₹1.93/min** vs **₹19.63/min** shadow baseline on live Cloud Run WebSocket runs (`TTFA 907.1 ms`, `368,162` bytes of `Despina` `hi-IN` audio, and `65.8 ms` Firestore `resolve_po_and_challan` latency), and **₹2.07/min** vs **₹9.12/min** over 4 tool calls in our multi-turn spike.
+- **Managed Vertex AI RAG Engine:** Live `GET /api/sop/search` queries the Mumbai `asia-south1` `RagCorpus` in `1,110.8 ms` returning `source_backend: "vertex_rag"` (`SOP-RCV-002` `Clause 4` and `SOP-FIN-001` `Clause 5`).
+- **Barge-In Concurrency Lock:** Mid-sentence count corrections trigger **HTTP 409 STALE_REVISION** blocks with **58 ms** to **65.8 ms** Firestore tool round-trip timing.
 - **Policy Enforcement:** Self-approval on high-value discrepancies fails closed with **HTTP 403 FORBIDDEN_ROLE** above **₹25,000**.
 - **Atomic Settlement:** Validated SKU-24 commits once from **1,000 to 1,284** pieces, emitting a **₹33,040 DRAFT** GST Debit Note.
-- **Test Verification:** **32/32 pytest** invariant and API tests pass alongside **10/10** concurrent ledger race stress trials.
+- **Test Verification:** **37/37 pytest** unit, invariant, gateway config, modality metering, failover, and RAG integration tests pass alongside **10/10** concurrent ledger race stress trials.
 
 ## Local Development and Tests
 

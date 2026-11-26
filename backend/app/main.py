@@ -125,7 +125,12 @@ def create_app() -> FastAPI:
             "status": "ok",
             "model": settings.gemini_live_model,
             "region": settings.gcp_location,
+            "fallback_region": settings.vertex_fallback_location,
+            "voice": settings.gemini_live_voice,
+            "language_code": settings.gemini_live_language_code,
+            "semantic_vad": True,
             "storage_backend": settings.storage_backend,
+            "rag_backend": "vertex_rag" if settings.vertex_rag_corpus else "local_index",
             "git_sha": settings.git_sha,
             "live_configured": bool(settings.gcp_project_id or settings.gemini_api_key),
         }
