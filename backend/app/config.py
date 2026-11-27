@@ -42,6 +42,20 @@ class Settings:
     fx_inr_per_usd: float = field(default_factory=lambda: float(os.getenv("FX_INR_PER_USD", "84.50")))
     git_sha: str = field(default_factory=lambda: _env_str("GIT_SHA", "clean-room-dev"))
     cors_origins: str = field(default_factory=lambda: _env_str("CORS_ORIGINS", "*"))
+    erpnext_base_url: str = field(default_factory=lambda: _env_str("ERPNEXT_BASE_URL", ""))
+    erpnext_api_key: str = field(default_factory=lambda: _env_str("ERPNEXT_API_KEY", ""))
+    erpnext_api_secret: str = field(default_factory=lambda: _env_str("ERPNEXT_API_SECRET", ""))
+    erpnext_company: str = field(default_factory=lambda: _env_str("ERPNEXT_COMPANY", "VayuMech Receiving Sandbox"))
+    erpnext_warehouse: str = field(default_factory=lambda: _env_str("ERPNEXT_WAREHOUSE", "Dock 1 - VRS"))
+    model_armor_location: str = field(default_factory=lambda: _env_str("MODEL_ARMOR_LOCATION", "asia-south1"))
+    model_armor_template: str = field(
+        default_factory=lambda: _env_str("MODEL_ARMOR_TEMPLATE", "dockpilot-challan-guard")
+    )
+    approval_hmac_secret: str = field(
+        default_factory=lambda: _env_str("APPROVAL_HMAC_SECRET", "dockpilot-dev-hmac-secret-rotate-prod")
+    )
+    supervisor_webhook_url: str = field(default_factory=lambda: _env_str("SUPERVISOR_WEBHOOK_URL", ""))
+    public_web_url: str = field(default_factory=lambda: _env_str("PUBLIC_WEB_URL", "https://dockpilot.adelev8.com"))
 
 
 def get_settings() -> Settings:

@@ -162,6 +162,12 @@ class GoodsReceiptNote(BaseModel):
     approver_id: str | None = None
     claim_id: str | None = None
     reversed: bool = False
+    erp_receipt_id: str | None = None
+    erp_po_id: str | None = None
+    erp_stock_after: int | None = None
+    erp_verified: bool = False
+    erp_url: str | None = None
+    erp_sync_status: Literal["NOT_CONFIGURED", "PENDING", "POSTED", "FAILED"] = "NOT_CONFIGURED"
     committed_at: str = Field(default_factory=utc_now_iso)
 
 
@@ -212,6 +218,12 @@ class WorkflowSnapshot(BaseModel):
     claim_pack: SupplierDebitNotePack | None = None
     movements: list[StockMovement] = Field(default_factory=list)
     audit_events: list[AuditEvent] = Field(default_factory=list)
+    model_armor_last_check: dict[str, Any] | None = None
+    adk_pipeline_trace: list[dict[str, Any]] = Field(default_factory=list)
+    challan_source: Literal["SEEDED", "CAMERA_UPLOAD"] = "SEEDED"
+    driver_gate_pass: dict[str, Any] | None = None
+    dynamic_po: PurchaseOrder | None = None
+    dynamic_sku: SKU | None = None
     updated_at: str = Field(default_factory=utc_now_iso)
 
 

@@ -1,0 +1,84 @@
+{
+  "benchmark": "dockpilot_closed_loop_receiving_v1",
+  "measured_at_utc": "2026-11-27T21:24:35.069856+00:00",
+  "api_base": "https://api.dockpilot.adelev8.com",
+  "methodology": "Sequential live HTTPS calls from mac-mini to Cloud Run asia-south1 (dockpilot-api), Vertex AI Model Armor (dockpilot-challan-guard), Vertex AI RAG Engine, and isolated ERPNext v16 sandbox (erp.dockpilot.adelev8.com). No mocked dependencies.",
+  "results": {
+    "erp_initial_probe": {
+      "status": 200,
+      "latency_ms": 249.25,
+      "sku24_balance": 1000
+    },
+    "model_armor_injection_block": {
+      "status": 422,
+      "wall_latency_ms": 261.34,
+      "model_armor_api_ms": 63.2,
+      "backend": "vertex_model_armor",
+      "template": "dockpilot-challan-guard",
+      "match_state": "MATCH_FOUND"
+    },
+    "dynamic_alt_challan_mint": {
+      "status": 200,
+      "latency_ms": 443.01,
+      "po_number": "PO-8821",
+      "expected_pieces": 120
+    },
+    "stale_rev1_hmac_rejection": {
+      "status": 409,
+      "latency_ms": 259.07,
+      "erp_stock_unchanged": 1000
+    },
+    "rag_policy_lookup": {
+      "status": 200,
+      "latency_ms": 779.67,
+      "citations_count": 2,
+      "source_backend": "vertex_rag"
+    },
+    "adk_plus_erpnext_commit": {
+      "status": 200,
+      "latency_ms": 1397.76,
+      "erp_receipt_id": "MAT-PRE-2026-00007",
+      "erp_verified": true,
+      "erp_stock_after": 1284,
+      "adk_agents": [
+        "ChallanComplianceAgent",
+        "LedgerWriteGateAgent",
+        "ERPSettlementAgent"
+      ]
+    },
+    "duplicate_retry_idempotency": {
+      "status": 200,
+      "latency_ms": 1046.53,
+      "erp_receipt_id": "MAT-PRE-2026-00007",
+      "erp_stock_after": 1284
+    },
+    "compliance_artifacts": {
+      "tally_xml": {
+        "status": 200,
+        "latency_ms": 196.83,
+        "bytes": 2438
+      },
+      "cgst_rule53_pdf": {
+        "status": 200,
+        "latency_ms": 237.59,
+        "bytes": 2274
+      },
+      "driver_gate_pass": {
+        "status": 200,
+        "latency_ms": 212.81,
+        "gate_pass_id": "GP-GRN-4471"
+      }
+    },
+    "core_fsm_step_ms": {
+      "resolve_po_ms": 336.55,
+      "draft_rev1_ms": 339.53,
+      "barge_in_ms": 326.17,
+      "draft_rev2_ms": 318.32
+    },
+    "cleanup_reset": {
+      "status": 200,
+      "latency_ms": 783.02,
+      "sku24_balance_restored": 1000
+    }
+  }
+}

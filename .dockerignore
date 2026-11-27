@@ -1,0 +1,9 @@
+.git
+frontend
+**/__pycache__
+**/*.pyc
+*.sqlite3
+.venv
+benchmarks
+tests
+README.md

@@ -1,4 +1,12 @@
-import type { HealthResponse, PolicyCitation, WorkflowStatePayload } from "./types";
+import type {
+  ApprovalLinkResponse,
+  CatalogResponse,
+  DriverGatePass,
+  ERPLiveStatus,
+  HealthResponse,
+  PolicyCitation,
+  WorkflowStatePayload,
+} from "./types";
 
 export function getApiBase(): string {
   if (process.env.NEXT_PUBLIC_API_BASE) {
@@ -35,6 +43,23 @@ export function getWsBase(): string {
   return "ws://127.0.0.1:8000";
 }
 
+async function parseErrorResponse(res: Response): Promise<never> {
+  let data: Record<string, unknown> = {};
+  try {
+    data = (await res.json()) as Record<string, unknown>;
+  } catch {
+    data = {};
+  }
+  const detail = (data.detail as Record<string, unknown> | undefined) || data;
+  const code = String(detail?.error_code || `HTTP_${res.status}`);
+  const msg = String(detail?.message || `Request failed (${res.status})`);
+  const err = new Error(msg) as Error & { code?: string; status?: number; detail?: unknown };
+  err.code = code;
+  err.status = res.status;
+  err.detail = detail;
+  throw err;
+}
+
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${getApiBase()}${path}`, {
     ...init,
@@ -44,27 +69,39 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     },
     cache: "no-store",
   });
-  const data = await res.json();
   if (!res.ok) {
-    const detail = data?.detail || data;
-    const code = detail?.error_code || `HTTP_${res.status}`;
-    const msg = detail?.message || `Request failed (${res.status})`;
-    const err = new Error(msg) as Error & { code?: string; status?: number };
-    err.code = code;
-    err.status = res.status;
-    throw err;
+    return parseErrorResponse(res);
   }
-  return data as T;
+  return (await res.json()) as T;
 }
 
 export const dockApi = {
   health: () => apiRequest<HealthResponse>("/api/health"),
+  catalog: () => apiRequest<CatalogResponse>("/api/catalog"),
+  erpLiveStatus: () => apiRequest<ERPLiveStatus>("/api/erp/live-status"),
   state: (wf: string) => apiRequest<WorkflowStatePayload>(`/api/workflows/${wf}/state`),
   resolvePo: (wf: string, poNumber: string) =>
     apiRequest<WorkflowStatePayload>(`/api/workflows/${wf}/resolve-po`, {
       method: "POST",
       body: JSON.stringify({ po_number: poNumber, actor_id: "receiver-01" }),
     }),
+  ingestChallan: async (
+    wf: string,
+    opts: { file?: File; fixtureId?: "standard" | "alt-kaveri" | "injection-trap" }
+  ): Promise<WorkflowStatePayload> => {
+    const fd = new FormData();
+    if (opts.file) fd.append("file", opts.file);
+    if (opts.fixtureId) fd.append("fixture_id", opts.fixtureId);
+    const res = await fetch(`${getApiBase()}/api/workflows/${wf}/ingest-challan`, {
+      method: "POST",
+      body: fd,
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return parseErrorResponse(res);
+    }
+    return (await res.json()) as WorkflowStatePayload;
+  },
   draft: (
     wf: string,
     body: {
@@ -98,6 +135,29 @@ export const dockApi = {
     apiRequest<WorkflowStatePayload>(`/api/workflows/${wf}/request-approval`, {
       method: "POST",
       body: JSON.stringify({ revision_id: revisionId, reason }),
+    }),
+  approvalLink: (wf: string, revisionId?: number) => {
+    const qs = revisionId !== undefined ? `?revision_id=${revisionId}` : "";
+    return apiRequest<ApprovalLinkResponse>(`/api/workflows/${wf}/approval-link${qs}`);
+  },
+  approveByToken: (
+    wf: string,
+    body: {
+      revision_id: number;
+      sig: string;
+      actor_id?: string;
+      reason?: string;
+      auto_commit?: boolean;
+    }
+  ) =>
+    apiRequest<WorkflowStatePayload>(`/api/workflows/${wf}/approve-by-token`, {
+      method: "POST",
+      body: JSON.stringify({
+        actor_id: "sup-ops-lead",
+        reason: "Verified physical count and challan via Supervisor Sign-Off",
+        auto_commit: true,
+        ...body,
+      }),
     }),
   approve: (
     wf: string,
@@ -139,6 +199,12 @@ export const dockApi = {
     apiRequest<{ citations: PolicyCitation[]; latency_ms: number }>(
       `/api/sop/search?workflow_id=${encodeURIComponent(wf)}&q=${encodeURIComponent(q)}`
     ),
+  gatePass: (wf: string) => apiRequest<DriverGatePass>(`/api/workflows/${wf}/artifacts/gate-pass`),
+  acknowledgeGatePass: (wf: string, body: { sig: string; driver_name: string }) =>
+    apiRequest<WorkflowStatePayload>(`/api/workflows/${wf}/artifacts/gate-pass/acknowledge`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   telemetryPulse: (
     wf: string,
     payload: {
@@ -153,4 +219,8 @@ export const dockApi = {
       method: "POST",
       body: JSON.stringify({ text_in: 420, audio_in: 500, audio_out: 120, ...payload }),
     }),
+  tallyXmlUrl: (wf: string) => `${getApiBase()}/api/workflows/${wf}/artifacts/tally-xml`,
+  debitNotePdfUrl: (wf: string) => `${getApiBase()}/api/workflows/${wf}/artifacts/debit-note.pdf`,
+  fixturePdfUrl: (fixtureId: "standard" | "alt-kaveri" | "injection-trap") =>
+    `${getApiBase()}/api/fixtures/challans/${fixtureId}.pdf`,
 };

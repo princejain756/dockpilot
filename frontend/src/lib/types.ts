@@ -6,7 +6,7 @@ export type WorkflowStage =
   | "HOLD_EXCEPTION"
   | "REVERSED";
 
-export type ActorRole = "RECEIVER" | "SUPERVISOR";
+export type ActorRole = "RECEIVER" | "SUPERVISOR" | "SYSTEM";
 
 export type NoiseFilterMode = "raw" | "web-rnnoise";
 
@@ -32,6 +32,22 @@ export interface PurchaseOrder {
   pack_unit: string;
   expected_pieces: number;
   open_pieces: number;
+}
+
+export interface SKU {
+  sku_id: string;
+  name: string;
+  warehouse_id: string;
+  unit_cost_inr: number;
+  gst_rate_pct: number;
+  hsn_code: string;
+  pack_conversions: Record<string, number>;
+  ambiguous_units: string[];
+}
+
+export interface CatalogResponse {
+  pos: PurchaseOrder[];
+  skus: SKU[];
 }
 
 export interface DraftRevision {
@@ -87,7 +103,7 @@ export interface SupplierDebitNotePack {
   vendor_name: string;
   vendor_gstin: string;
   sku_id: string;
-  short_pieces: intOrNum;
+  short_pieces: number;
   unit_cost_inr: number;
   taxable_shortage_inr: number;
   cgst_inr: number;
@@ -100,8 +116,6 @@ export interface SupplierDebitNotePack {
   synthetic_disclaimer: string;
   created_at: string;
 }
-
-type intOrNum = number;
 
 export interface GoodsReceiptNote {
   grn_id: string;
@@ -116,6 +130,12 @@ export interface GoodsReceiptNote {
   approver_id: string | null;
   claim_id: string | null;
   reversed: boolean;
+  erp_receipt_id?: string | null;
+  erp_po_id?: string | null;
+  erp_stock_after?: number | null;
+  erp_verified?: boolean;
+  erp_url?: string | null;
+  erp_sync_status?: "NOT_CONFIGURED" | "PENDING" | "POSTED" | "FAILED";
   committed_at: string;
 }
 
@@ -145,6 +165,56 @@ export interface AuditEvent {
   created_at: string;
 }
 
+export interface ModelArmorCheck {
+  safe: boolean;
+  backend: string;
+  location?: string;
+  template: string;
+  match_state: string;
+  findings: string[];
+  latency_ms: number;
+}
+
+export interface ADKStageTrace {
+  agent: string;
+  role_scope: string;
+  status: string;
+  latency_ms: number;
+  detail?: Record<string, unknown>;
+}
+
+export interface DriverGatePass {
+  gate_pass_id: string;
+  workflow_id: string;
+  grn_id: string;
+  erp_receipt_id?: string | null;
+  po_number: string;
+  challan_no: string;
+  vehicle_no: string;
+  vendor_name: string;
+  sku_id: string;
+  sku_name: string;
+  expected_pieces: number;
+  received_pieces: number;
+  shortage_pieces: number;
+  shortage_value_inr: number;
+  title_hi: string;
+  summary_hi: string;
+  summary_en: string;
+  acknowledged_by_driver: boolean;
+  driver_name: string | null;
+  acknowledged_at: string | null;
+  sig: string;
+  gate_url: string;
+}
+
+export interface GSTINCheck {
+  gstin: string;
+  format_valid: boolean;
+  checksum_valid: boolean;
+  expected_check_char?: string;
+}
+
 export interface WorkflowSnapshot {
   workflow_id: string;
   stage: WorkflowStage;
@@ -160,6 +230,12 @@ export interface WorkflowSnapshot {
   claim_pack: SupplierDebitNotePack | null;
   movements: StockMovement[];
   audit_events: AuditEvent[];
+  model_armor_last_check?: ModelArmorCheck | null;
+  adk_pipeline_trace?: ADKStageTrace[];
+  challan_source?: "SEEDED" | "CAMERA_UPLOAD";
+  driver_gate_pass?: DriverGatePass | null;
+  dynamic_po?: PurchaseOrder | null;
+  dynamic_sku?: SKU | null;
   updated_at: string;
 }
 
@@ -200,9 +276,54 @@ export interface HealthResponse {
   status: string;
   model: string;
   region: string;
+  fallback_region?: string;
+  voice?: string;
+  language_code?: string;
+  semantic_vad?: boolean;
   storage_backend: string;
+  rag_backend?: "vertex_rag" | "local_index";
   git_sha: string;
   live_configured: boolean;
+  erpnext_configured?: boolean;
+  erpnext_base_url?: string | null;
+  erpnext_company?: string;
+  erpnext_warehouse?: string;
+  model_armor_enabled?: boolean;
+  model_armor_location?: string;
+  model_armor_template?: string;
+  adk_pipeline?: string;
+}
+
+export interface ApprovalLinkResponse {
+  workflow_id: string;
+  revision_id: number;
+  revision_status: string;
+  sig: string;
+  approve_url: string;
+  whatsapp_share_url: string;
+  webhook_dispatched: boolean;
+}
+
+export interface ERPLiveStatus {
+  configured: boolean;
+  reachable: boolean;
+  base_url: string | null;
+  company?: string;
+  warehouse?: string;
+  latency_ms?: number;
+  sku24_balance: number | null;
+  stock_ledger_url: string | null;
+  recent_receipts: Array<{
+    name: string;
+    supplier: string;
+    posting_date: string;
+    total_qty: number;
+    docstatus: number;
+    dockpilot_delivery_id?: string;
+    dockpilot_revision_id?: number;
+    dockpilot_workflow_id?: string;
+    url: string;
+  }>;
 }
 
 export interface WorkflowStatePayload {
@@ -217,8 +338,15 @@ export interface WorkflowStatePayload {
   live_backend?: string;
   model?: string;
   region?: string;
+  from_region?: string;
+  reason?: string;
   text?: string;
   data_b64?: string;
   tool?: string;
   stop_latency_ms?: number;
+  po?: PurchaseOrder;
+  sku?: SKU;
+  model_armor?: ModelArmorCheck;
+  gstin_check?: GSTINCheck;
+  driver_gate_pass?: DriverGatePass;
 }

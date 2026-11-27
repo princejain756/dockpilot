@@ -120,6 +120,45 @@ class BaseLedgerStore(ABC):
     ) -> tuple[WorkflowSnapshot, StockMovement]:
         """Post compensating reversal movement without deleting original GRN."""
 
+    @abstractmethod
+    def register_dynamic_po(
+        self,
+        *,
+        workflow_id: str,
+        po: PurchaseOrder,
+        sku: SKU,
+        armor_check: dict[str, Any],
+        gstin_check: dict[str, Any] | None = None,
+        initial_balance: int = 500,
+    ) -> WorkflowSnapshot:
+        """Persist dynamically ingested challan PO/SKU into workflow and advance to RECONCILE."""
+
+    @abstractmethod
+    def record_model_armor_event(
+        self,
+        *,
+        workflow_id: str,
+        armor_check: dict[str, Any],
+        blocked: bool = False,
+        detail: dict[str, Any] | None = None,
+    ) -> WorkflowSnapshot:
+        """Persist Model Armor safety check or prompt-injection block in audit log."""
+
+    @abstractmethod
+    def record_erp_and_adk_settlement(
+        self,
+        *,
+        workflow_id: str,
+        erp_res: dict[str, Any],
+        adk_trace: list[dict[str, Any]],
+        gate_pass: dict[str, Any] | None = None,
+    ) -> WorkflowSnapshot:
+        """Persist ERPNext Purchase Receipt verification, ADK pipeline trace, and Driver Gate-Pass."""
+
+    @abstractmethod
+    def acknowledge_driver_gate_pass(self, *, workflow_id: str, driver_name: str) -> WorkflowSnapshot:
+        """Record transporter acknowledgment on the bilingual discrepancy gate pass."""
+
 
 class _WorkflowMutatorMixin:
     """Shared deterministic state-transition rules used inside atomic transactions."""
@@ -600,6 +639,107 @@ class _WorkflowMutatorMixin:
         )
         return grn, False, new_balance
 
+    def _hydrate_dynamic_snapshot(self, snap: WorkflowSnapshot) -> None:
+        """Ensure snapshot-scoped dynamic PO/SKU definitions exist across Cloud Run instances."""
+        if snap.dynamic_sku is not None and snap.dynamic_sku.sku_id not in self.skus:
+            self.skus[snap.dynamic_sku.sku_id] = snap.dynamic_sku
+        if snap.dynamic_po is not None and snap.dynamic_po.po_number not in self.pos:
+            self.pos[snap.dynamic_po.po_number] = snap.dynamic_po
+
+    def _apply_register_dynamic_po(
+        self,
+        snap: WorkflowSnapshot,
+        *,
+        po: PurchaseOrder,
+        sku: SKU,
+        armor_check: dict[str, Any],
+        gstin_check: dict[str, Any] | None,
+        current_inventory: int,
+    ) -> None:
+        self.skus[sku.sku_id] = sku
+        self.pos[po.po_number] = po
+        snap.dynamic_sku = sku
+        snap.dynamic_po = po
+        snap.challan_source = "CAMERA_UPLOAD"
+        snap.model_armor_last_check = armor_check
+        snap.po_number = po.po_number
+        snap.sku_id = sku.sku_id
+        snap.inventory_balance = current_inventory
+        # Clear any old un-committed drafts belonging to a prior PO
+        if snap.revisions and snap.grn is None:
+            for existing in snap.revisions:
+                if existing.status in ("DRAFT", "CONFIRMED", "APPROVED"):
+                    existing.status = "SUPERSEDED"
+            snap.approval = None
+            snap.current_revision_id = None
+        snap.write_gate_open = True
+        snap.stage = WorkflowStage.HOLD_EXCEPTION if po.eway_bill.status != "ACTIVE" else WorkflowStage.RECONCILE
+        self._append_audit(
+            snap,
+            event_type="CHALLAN_INGESTED_DYNAMIC",
+            actor_id="dockpilot-vision",
+            actor_role="AGENT",
+            detail={
+                "po_number": po.po_number,
+                "sku_id": sku.sku_id,
+                "expected_pieces": po.expected_pieces,
+                "gstin_valid": (gstin_check or {}).get("checksum_valid"),
+                "model_armor": armor_check,
+            },
+        )
+
+    def _apply_model_armor_event(
+        self,
+        snap: WorkflowSnapshot,
+        *,
+        armor_check: dict[str, Any],
+        blocked: bool,
+        detail: dict[str, Any] | None,
+    ) -> None:
+        snap.model_armor_last_check = armor_check
+        self._append_audit(
+            snap,
+            event_type="MODEL_ARMOR_BLOCKED" if blocked else "MODEL_ARMOR_PASSED",
+            actor_id="vertex-model-armor",
+            actor_role="SYSTEM",
+            revision_id=snap.current_revision_id,
+            detail={**(detail or {}), "model_armor": armor_check},
+        )
+
+    def _apply_erp_and_adk_settlement(
+        self,
+        snap: WorkflowSnapshot,
+        *,
+        erp_res: dict[str, Any],
+        adk_trace: list[dict[str, Any]],
+        gate_pass: dict[str, Any] | None,
+    ) -> None:
+        if adk_trace:
+            snap.adk_pipeline_trace = adk_trace
+        if snap.grn is not None:
+            if erp_res.get("erp_receipt_id"):
+                snap.grn.erp_receipt_id = str(erp_res["erp_receipt_id"])
+            if erp_res.get("erp_po_id"):
+                snap.grn.erp_po_id = str(erp_res["erp_po_id"])
+            if erp_res.get("erp_stock_after") is not None:
+                snap.grn.erp_stock_after = int(erp_res["erp_stock_after"])
+            snap.grn.erp_verified = bool(erp_res.get("erp_verified", False))
+            if erp_res.get("erp_url"):
+                snap.grn.erp_url = str(erp_res["erp_url"])
+            sync_status = str(erp_res.get("erp_sync_status") or "NOT_CONFIGURED")
+            if sync_status in ("NOT_CONFIGURED", "PENDING", "POSTED", "FAILED"):
+                snap.grn.erp_sync_status = sync_status  # type: ignore[assignment]
+        if gate_pass is not None:
+            snap.driver_gate_pass = gate_pass
+        self._append_audit(
+            snap,
+            event_type="ERP_PURCHASE_RECEIPT_POSTED" if erp_res.get("erp_verified") else "ADK_PIPELINE_SETTLED",
+            actor_id="adk-erp-settlement",
+            actor_role="AGENT",
+            revision_id=snap.grn.revision_id if snap.grn else snap.current_revision_id,
+            detail={"erp_result": erp_res, "adk_stages": [s.get("agent") for s in adk_trace]},
+        )
+
     def _apply_reverse(
         self,
         snap: WorkflowSnapshot,
@@ -683,6 +823,7 @@ class SQLiteAtomicLedger(BaseLedgerStore, _WorkflowMutatorMixin):
             )
             return snap
         snap = WorkflowSnapshot.model_validate_json(row["payload"])
+        self._hydrate_dynamic_snapshot(snap)
         if snap.sku_id:
             r2 = self._conn.execute("SELECT balance FROM inventory WHERE sku_id = ?", (snap.sku_id,)).fetchone()
             if r2:
@@ -895,6 +1036,89 @@ class SQLiteAtomicLedger(BaseLedgerStore, _WorkflowMutatorMixin):
 
         return self._run_tx(workflow_id, op)
 
+    def register_dynamic_po(
+        self,
+        *,
+        workflow_id: str,
+        po: PurchaseOrder,
+        sku: SKU,
+        armor_check: dict[str, Any],
+        gstin_check: dict[str, Any] | None = None,
+        initial_balance: int = 500,
+    ) -> WorkflowSnapshot:
+        def op(snap: WorkflowSnapshot):
+            self._conn.execute(
+                "INSERT OR IGNORE INTO inventory (sku_id, balance) VALUES (?, ?)",
+                (sku.sku_id, initial_balance),
+            )
+            row = self._conn.execute("SELECT balance FROM inventory WHERE sku_id = ?", (sku.sku_id,)).fetchone()
+            cur_bal = int(row["balance"]) if row else initial_balance
+            self._apply_register_dynamic_po(
+                snap,
+                po=po,
+                sku=sku,
+                armor_check=armor_check,
+                gstin_check=gstin_check,
+                current_inventory=cur_bal,
+            )
+            return snap
+
+        return self._run_tx(workflow_id, op)
+
+    def record_model_armor_event(
+        self,
+        *,
+        workflow_id: str,
+        armor_check: dict[str, Any],
+        blocked: bool = False,
+        detail: dict[str, Any] | None = None,
+    ) -> WorkflowSnapshot:
+        def op(snap: WorkflowSnapshot):
+            self._apply_model_armor_event(snap, armor_check=armor_check, blocked=blocked, detail=detail)
+            return snap
+
+        return self._run_tx(workflow_id, op)
+
+    def record_erp_and_adk_settlement(
+        self,
+        *,
+        workflow_id: str,
+        erp_res: dict[str, Any],
+        adk_trace: list[dict[str, Any]],
+        gate_pass: dict[str, Any] | None = None,
+    ) -> WorkflowSnapshot:
+        def op(snap: WorkflowSnapshot):
+            self._apply_erp_and_adk_settlement(
+                snap,
+                erp_res=erp_res,
+                adk_trace=adk_trace,
+                gate_pass=gate_pass,
+            )
+            return snap
+
+        return self._run_tx(workflow_id, op)
+
+    def acknowledge_driver_gate_pass(self, *, workflow_id: str, driver_name: str) -> WorkflowSnapshot:
+        def op(snap: WorkflowSnapshot):
+            if snap.driver_gate_pass is None:
+                raise DomainRuleError(404, "NO_GATE_PASS", "Driver gate pass has not been issued yet.")
+            gp = dict(snap.driver_gate_pass)
+            gp["acknowledged_by_driver"] = True
+            gp["driver_name"] = driver_name.strip() or "Driver"
+            gp["acknowledged_at"] = utc_now_iso()
+            snap.driver_gate_pass = gp
+            self._append_audit(
+                snap,
+                event_type="DRIVER_GATE_PASS_ACKNOWLEDGED",
+                actor_id=gp["driver_name"],
+                actor_role="TRANSPORTER",
+                revision_id=snap.grn.revision_id if snap.grn else None,
+                detail={"gate_pass_id": gp.get("gate_pass_id"), "shortage_pieces": gp.get("shortage_pieces")},
+            )
+            return snap
+
+        return self._run_tx(workflow_id, op)
+
 
 class FirestoreAtomicLedger(BaseLedgerStore, _WorkflowMutatorMixin):
     """Google Cloud Firestore Native single-store atomic ledger (asia-south1)."""
@@ -929,6 +1153,7 @@ class FirestoreAtomicLedger(BaseLedgerStore, _WorkflowMutatorMixin):
             doc = wf_ref.get(transaction=transaction)
             if doc.exists:
                 snap = WorkflowSnapshot.model_validate(doc.to_dict())
+                self._hydrate_dynamic_snapshot(snap)
             else:
                 inv_doc = self.client.collection("inventory").document("DOCK1_SKU-24").get(transaction=transaction)
                 bal = int(inv_doc.to_dict()["balance"]) if inv_doc.exists else 1000
@@ -1125,6 +1350,95 @@ class FirestoreAtomicLedger(BaseLedgerStore, _WorkflowMutatorMixin):
             )
             tx.set(inv_ref, {"sku_id": sku_id, "warehouse_id": "DOCK-1", "balance": new_bal})
             return snap, mov
+
+        return self._run_fs_tx(workflow_id, op)
+
+    def register_dynamic_po(
+        self,
+        *,
+        workflow_id: str,
+        po: PurchaseOrder,
+        sku: SKU,
+        armor_check: dict[str, Any],
+        gstin_check: dict[str, Any] | None = None,
+        initial_balance: int = 500,
+    ) -> WorkflowSnapshot:
+        def op(tx, snap: WorkflowSnapshot):
+            inv_ref = self.client.collection("inventory").document(f"DOCK1_{sku.sku_id}")
+            inv_doc = inv_ref.get(transaction=tx)
+            if inv_doc.exists:
+                cur_bal = int(inv_doc.to_dict()["balance"])
+            else:
+                cur_bal = initial_balance
+                tx.set(inv_ref, {"sku_id": sku.sku_id, "warehouse_id": "DOCK-1", "balance": cur_bal})
+            self._apply_register_dynamic_po(
+                snap,
+                po=po,
+                sku=sku,
+                armor_check=armor_check,
+                gstin_check=gstin_check,
+                current_inventory=cur_bal,
+            )
+            return snap
+
+        return self._run_fs_tx(workflow_id, op)
+
+    def record_model_armor_event(
+        self,
+        *,
+        workflow_id: str,
+        armor_check: dict[str, Any],
+        blocked: bool = False,
+        detail: dict[str, Any] | None = None,
+    ) -> WorkflowSnapshot:
+        def op(_tx, snap: WorkflowSnapshot):
+            self._apply_model_armor_event(snap, armor_check=armor_check, blocked=blocked, detail=detail)
+            return snap
+
+        return self._run_fs_tx(workflow_id, op)
+
+    def record_erp_and_adk_settlement(
+        self,
+        *,
+        workflow_id: str,
+        erp_res: dict[str, Any],
+        adk_trace: list[dict[str, Any]],
+        gate_pass: dict[str, Any] | None = None,
+    ) -> WorkflowSnapshot:
+        def op(tx, snap: WorkflowSnapshot):
+            self._apply_erp_and_adk_settlement(
+                snap,
+                erp_res=erp_res,
+                adk_trace=adk_trace,
+                gate_pass=gate_pass,
+            )
+            if snap.grn is not None:
+                tx.set(
+                    self.client.collection("receipts").document(snap.grn.grn_id),
+                    json.loads(snap.grn.model_dump_json()),
+                )
+            return snap
+
+        return self._run_fs_tx(workflow_id, op)
+
+    def acknowledge_driver_gate_pass(self, *, workflow_id: str, driver_name: str) -> WorkflowSnapshot:
+        def op(_tx, snap: WorkflowSnapshot):
+            if snap.driver_gate_pass is None:
+                raise DomainRuleError(404, "NO_GATE_PASS", "Driver gate pass has not been issued yet.")
+            gp = dict(snap.driver_gate_pass)
+            gp["acknowledged_by_driver"] = True
+            gp["driver_name"] = driver_name.strip() or "Driver"
+            gp["acknowledged_at"] = utc_now_iso()
+            snap.driver_gate_pass = gp
+            self._append_audit(
+                snap,
+                event_type="DRIVER_GATE_PASS_ACKNOWLEDGED",
+                actor_id=gp["driver_name"],
+                actor_role="TRANSPORTER",
+                revision_id=snap.grn.revision_id if snap.grn else None,
+                detail={"gate_pass_id": gp.get("gate_pass_id"), "shortage_pieces": gp.get("shortage_pieces")},
+            )
+            return snap
 
         return self._run_fs_tx(workflow_id, op)
 
