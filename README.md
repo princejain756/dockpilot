@@ -9,8 +9,9 @@ Built by Prince Jain (Full-Stack Software Engineer, Team ADELEV8 AI).
 - **Web Console & Floor HUD:** `https://dockpilot.adelev8.com` (Cloud Run `dockpilot-web-493779545452.asia-south1.run.app`, mobile HUD at `/dock`, HMAC sign-off at `/approve/[workflowId]`, bilingual driver pass at `/gate-pass/[workflowId]`)
 - **API & Live Voice Gateway:** `https://api.dockpilot.adelev8.com/api/health` (Cloud Run `dockpilot-api-493779545452.asia-south1.run.app`)
 - **Isolated ERPNext v16 Sandbox:** `https://erp.dockpilot.adelev8.com` (`VayuMech Receiving Sandbox`, Dock 1 opening balance `1,000 pcs` on `SKU-24`)
+- **1:47 Stage 2 Prototype Demo Video (YouTube 16:9):** `https://youtu.be/Y9OdrxT6xio`
 - **45s Architecture and Cost Breakdown (YouTube Short):** `https://youtube.com/shorts/Oyn0a0fRUcg`
-- **LinkedIn Build Post (`#BuildwithGemini`):** `https://www.linkedin.com/feed/update/urn:li:activity:7530950271741534209/`
+- **LinkedIn Build Post (`#BuildwithGemini`):** `https://www.linkedin.com/feed/update/urn:li:activity:7532237867943849984/`
 
 ## Core Closed-Loop Architecture
 
@@ -22,19 +23,19 @@ Built by Prince Jain (Full-Stack Software Engineer, Team ADELEV8 AI).
 - **Vertex AI RAG Engine Policy Search (`backend/app/rag.py`):** Queries managed Mumbai `RagCorpus` (`projects/493779545452/locations/asia-south1/ragCorpora/2305843009213693952`) over receiving SOP clauses (`SOP-RCV-002`, `SOP-FIN-001`, `SOP-EWB-003`).
 - **Operator Workbench & Mobile Floor HUD (`frontend/src/`):** Next.js 15 TypeScript UI across Operations Console (`/`), gloved-thumb Mobile HUD (`/dock`), Supervisor Sign-Off (`/approve/[workflowId]`), and Bilingual Driver Gate-Pass (`/gate-pass/[workflowId]`) with Light and Obsidian Dark themes.
 
-## Verified Production Measurements (`benchmarks/receiving_comparison.json`)
+## Verified Production Measurements (`benchmarks/receiving_distribution_10runs.json` & `benchmarks/manual_vs_dockpilot_timing.json`)
 
-Measured sequentially over live HTTPS calls against `https://api.dockpilot.adelev8.com`, Vertex AI (`asia-south1`), and `https://erp.dockpilot.adelev8.com` via `backend/scripts/benchmark_receiving.py`:
+Measured across 10 sequential unmocked closed-loop runs against `https://api.dockpilot.adelev8.com`, Vertex AI (`asia-south1`), and `https://erp.dockpilot.adelev8.com` via `backend/scripts/benchmark_distribution.py` (with full sandbox reset between runs):
 
-- **Vertex AI Model Armor Block (`dockpilot-challan-guard`):** Blocked adversarial invoice in `63.2 ms` Model Armor API time (`261.34 ms` end-to-end HTTP `422 MATCH_FOUND`).
-- **Unfamiliar Challan Dynamic Extraction (`alt-kaveri`):** Minted `PO-8821` (`120 pcs`) cleanly in `443.01 ms`.
-- **Stale Revision HMAC Protection:** Rev 1 token replay rejected with `HTTP 409 STALE_REVISION` in `259.07 ms`, keeping ERPNext `SKU-24` stock untouched at `1,000`.
-- **ADK Pipeline + ERPNext Purchase Receipt Commit:** Created and verified `MAT-PRE-2026-00007` across all 3 ADK stages in `1,397.76 ms` (`SKU-24`: `1,000 -> 1,284 pcs`).
-- **Duplicate Commit Idempotency:** Replaying commit returned the same `MAT-PRE-2026-00007` receipt in `1,046.53 ms` with stock unchanged at `1,284 pcs`.
-- **Compliance Downloads:** TallyPrime XML (`2,438 bytes`, `196.83 ms`), CGST Rule 53 Debit Note PDF (`2,274 bytes`, `237.59 ms`), and Bilingual Driver Gate-Pass `GP-GRN-4471` (`212.81 ms`).
-- **Vertex AI RAG Lookup:** Retrieved 2 grounded policy clauses (`source_backend: "vertex_rag"`) in `779.67 ms`.
-- **Voice FinOps Meter:** Sliding-window FSM context updates achieved **₹1.93/min** vs **₹19.63/min** uncompacted baseline on live Cloud Run WebSocket runs (`TTFA 907.1 ms`).
-- **Backend Test Suite & UI QA:** **41/41 pytest** tests pass (`9.67 s`), and five rounds of desktop and mobile UI QA passed with zero P0 blockers.
+- **Vertex AI Model Armor Block (`dockpilot-challan-guard`):** `48.85 ms` p50 API time (`88.19 ms` p95; `298.46 ms` p50 end-to-end HTTP `422 MATCH_FOUND`).
+- **Unfamiliar Challan Dynamic Extraction (`PO-8821`):** `408.66 ms` p50 (`646.22 ms` p95) minting `Kaveri Precision Hydraulics Pvt Ltd` (`120 pcs`).
+- **Stale Revision HMAC Protection:** Rev 1 token replay rejected at `HTTP 409 STALE_REVISION` in `281.15 ms` p50 (`557.30 ms` p95), keeping ERPNext `SKU-24` stock untouched at `1,000 pcs`.
+- **Vertex AI RAG Lookup (`RagCorpus`):** `405.68 ms` p50 (`712.99 ms` p95) retrieving grounded policy clauses (`SOP-RCV-002`, `SOP-FIN-001`).
+- **ADK Pipeline + ERPNext Purchase Receipt Commit:** `1,345.11 ms` p50 (`1,755.43 ms` p95) across all 3 sequential ADK stages (`MAT-PRE-2026-00008` through `MAT-PRE-2026-00017`, and `MAT-PRE-2026-00020` in live capture), moving `SKU-24` from `1,000` to `1,284 pcs` once vs `12,058 ms` measured for manual ERPNext Purchase Receipt draft navigation (`manual_vs_dockpilot_timing.json`, before GST debit math or supervisor sign-off).
+- **Duplicate Commit Idempotency:** `995.63 ms` p50 (`1,476.29 ms` p95) returning the existing Purchase Receipt cleanly with stock unchanged at `1,284 pcs`.
+- **Statutory & Gate Outputs:** TallyPrime XML (`2,438 bytes`, `285.36 ms` p50), CGST Rule 53 Debit Note PDF (`247.62 ms` p50), and Bilingual Driver Gate-Pass `GP-GRN-4471` (`192.78 ms` p50).
+- **Voice FinOps Meter:** Sliding-window FSM context updates achieved **₹1.93/min** vs **₹19.63/min** uncompacted baseline on live Cloud Run WebSocket runs (`TTFA 907.1 ms`, `Despina hi-IN`).
+- **Backend Test Suite:** **41/41 pytest** tests pass (`6.91 s`), and Next.js 15 TypeScript typecheck and production build pass cleanly.
 
 ## Local Development and Tests
 

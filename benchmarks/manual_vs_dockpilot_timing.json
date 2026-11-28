@@ -1,0 +1,7 @@
+{
+  "measured_at_utc": "2026-11-27T22:09:47.150Z",
+  "methodology": "Automated browser navigation timing in isolated ERPNext v16 sandbox opening Purchase Order list -> PO-4471 -> Create Purchase Receipt -> updating accepted quantity -> saving Draft (excludes manual typing pause, GST Debit Note calculation, Tally XML generation, and supervisor mobile sign-off).",
+  "manual_erpnext_pr_draft_ms": 12058,
+  "manual_draft_created": true,
+  "dockpilot_closed_loop_median_commit_ms": 1345.11
+}

@@ -1,0 +1,113 @@
+{
+  "benchmark": "dockpilot_closed_loop_distribution_v1",
+  "measured_at_utc": "2026-11-27T22:03:22.028570+00:00",
+  "api_base": "https://api.dockpilot.adelev8.com",
+  "runs": 10,
+  "methodology": "10 sequential unmocked closed-loop iterations against Cloud Run asia-south1, Vertex AI Model Armor, Vertex AI RAG Engine, and ERPNext v16 sandbox with full sandbox balance cleanup between runs.",
+  "summary_ms": {
+    "erp_initial_probe_ms": {
+      "runs": 10,
+      "min_ms": 214.03,
+      "p50_ms": 283.64,
+      "p95_ms": 694.22,
+      "max_ms": 777.08
+    },
+    "model_armor_api_ms": {
+      "runs": 10,
+      "min_ms": 37.9,
+      "p50_ms": 48.85,
+      "p95_ms": 88.19,
+      "max_ms": 101.2
+    },
+    "model_armor_wall_ms": {
+      "runs": 10,
+      "min_ms": 220.36,
+      "p50_ms": 298.46,
+      "p95_ms": 520.24,
+      "max_ms": 543.49
+    },
+    "dynamic_alt_challan_mint_ms": {
+      "runs": 10,
+      "min_ms": 363.71,
+      "p50_ms": 408.66,
+      "p95_ms": 646.22,
+      "max_ms": 708.5
+    },
+    "stale_rev1_hmac_rejection_ms": {
+      "runs": 10,
+      "min_ms": 236.19,
+      "p50_ms": 281.15,
+      "p95_ms": 557.3,
+      "max_ms": 684.94
+    },
+    "rag_policy_lookup_ms": {
+      "runs": 10,
+      "min_ms": 321.91,
+      "p50_ms": 405.68,
+      "p95_ms": 712.99,
+      "max_ms": 790.89
+    },
+    "adk_plus_erpnext_commit_ms": {
+      "runs": 10,
+      "min_ms": 997.9,
+      "p50_ms": 1345.11,
+      "p95_ms": 1755.43,
+      "max_ms": 1790.13
+    },
+    "duplicate_retry_idempotency_ms": {
+      "runs": 10,
+      "min_ms": 757.72,
+      "p50_ms": 995.63,
+      "p95_ms": 1476.29,
+      "max_ms": 1495.53
+    },
+    "tally_xml_ms": {
+      "runs": 10,
+      "min_ms": 158.61,
+      "p50_ms": 285.36,
+      "p95_ms": 857.71,
+      "max_ms": 1166.93
+    },
+    "cgst_rule53_pdf_ms": {
+      "runs": 10,
+      "min_ms": 139.79,
+      "p50_ms": 247.62,
+      "p95_ms": 568.46,
+      "max_ms": 604.1
+    },
+    "driver_gate_pass_ms": {
+      "runs": 10,
+      "min_ms": 147.14,
+      "p50_ms": 192.78,
+      "p95_ms": 493.44,
+      "max_ms": 577.45
+    },
+    "barge_in_ms": {
+      "runs": 10,
+      "min_ms": 165.45,
+      "p50_ms": 298.4,
+      "p95_ms": 599.3,
+      "max_ms": 712.69
+    },
+    "draft_rev2_ms": {
+      "runs": 10,
+      "min_ms": 177.09,
+      "p50_ms": 319.75,
+      "p95_ms": 524.62,
+      "max_ms": 577.77
+    }
+  },
+  "sample_receipt_ids": [
+    "MAT-PRE-2026-00008",
+    "MAT-PRE-2026-00009",
+    "MAT-PRE-2026-00010",
+    "MAT-PRE-2026-00011",
+    "MAT-PRE-2026-00012",
+    "MAT-PRE-2026-00013",
+    "MAT-PRE-2026-00014",
+    "MAT-PRE-2026-00015",
+    "MAT-PRE-2026-00016",
+    "MAT-PRE-2026-00017"
+  ],
+  "final_sku24_balance": 1000
+}
